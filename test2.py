@@ -122,8 +122,8 @@ class Side:
             vec = (v - centroid).normalize()
             # Calculate the angle using atan2 with respect to the reference direction
             cross = normal.cross(ref_dir).dot(vec)
-            dot = ref_dir.dot(vec)
-            angle = math.atan2(cross, dot)
+            dot_product = ref_dir.dot(vec)
+            angle = math.atan2(cross, dot_product)
             return angle
         # Sort vertices
         sorted_vertices = sorted(vertices, key=angle_from_centroid)
@@ -306,6 +306,24 @@ def generate_trigger_multiple(solid_id_counter, face_id_counter, side, height=4,
         logging.error(e)
         return None, face_id_counter
 
+    # Check for convexity
+    # For a quadrilateral, ensuring that the cross product of adjacent edges have the same direction
+    # This implies convexity
+    convex = True
+    for i in range(4):
+        v_current = base_vertices[i]
+        v_next = base_vertices[(i + 1) % 4]
+        v_next_next = base_vertices[(i + 2) % 4]
+        edge1 = v_next - v_current
+        edge2 = v_next_next - v_next
+        cross = edge1.cross(edge2)
+        if cross.dot(normal) < 0:
+            convex = False
+            break
+    if not convex:
+        logging.warning(f"Skipping side {side.id} because it forms a non-convex face.")
+        return None, face_id_counter
+
     # Create the top vertices by moving along the normal vector
     top_vertices = [v + normal.scale(height) for v in base_vertices]
 
@@ -321,18 +339,27 @@ def generate_trigger_multiple(solid_id_counter, face_id_counter, side, height=4,
     trigger_sides = []
 
     # Function to create a side
-    def create_side(v1, v2, v3, v4, material="TOOLS/TOOLSTRIGGER", uaxis="[0 0 1 0] 0.25", vaxis="[0 -1 0 0] 0.25"):
+    def create_side(v1, v2, v3, v4, material="TOOLS/TOOLSTRIGGER", rotation=0):
         nonlocal face_id_counter
+        # Define the plane using three points
         plane_str = f"({v1.x} {v1.y} {v1.z}) ({v2.x} {v2.y} {v2.z}) ({v3.x} {v3.y} {v3.z})"
-        vertices_plus_data = {'v': [f"{v.x} {v.y} {v.z}" for v in [v1, v2, v3, v4]]}
+        # Calculate texture axes based on normal
+        # uaxis: aligned with the first edge
+        edge_u = (v2 - v1).normalize()
+        # vaxis: perpendicular to uaxis and normal
+        edge_v = normal.cross(edge_u).normalize()
+        # Example scaling factor; adjust as needed
+        uaxis = f"[{edge_u.x} {edge_u.y} {edge_u.z} 0] 0.25"
+        vaxis = f"[{edge_v.x} {edge_v.y} {edge_v.z} 0] 0.25"
+        # Build the side data
         side_data = {
             'id': f'{face_id_counter}',
             'plane': plane_str,
-            'vertices_plus': vertices_plus_data,
+            'vertices_plus': {'v': [f"{v.x} {v.y} {v.z}" for v in [v1, v2, v3, v4]]},
             'material': material,
             'uaxis': uaxis,
             'vaxis': vaxis,
-            'rotation': '0',
+            'rotation': str(rotation),
             'lightmapscale': '16',
             'smoothing_groups': '0'
         }
@@ -351,12 +378,18 @@ def generate_trigger_multiple(solid_id_counter, face_id_counter, side, height=4,
         trigger_sides.append(side_face)
 
     # Create bottom face
+    # Ensure correct winding order (clockwise or counter-clockwise based on normal)
     bottom_face = create_side(base_vertices[0], base_vertices[1], base_vertices[2], base_vertices[3])
     trigger_sides.append(bottom_face)
 
     # Create top face (reversed order for correct normal)
     top_face = create_side(top_vertices[2], top_vertices[1], top_vertices[0], top_vertices[3])
     trigger_sides.append(top_face)
+
+    # Verify that exactly six faces are created
+    if len(trigger_sides) != 6:
+        logging.error(f"Generated trigger_multiple for side {side.id} of solid {solid_id_counter} does not have exactly 6 faces.")
+        return None, face_id_counter
 
     # Build the solid
     trigger_solid = {
@@ -479,7 +512,7 @@ def main():
                         new_entities.append(trigger_entity)
                         logging.info(f"Generated trigger_multiple for side {side.id} of solid {solid.id}")
                     else:
-                        logging.warning(f"Skipped side {side.id} of solid {solid.id} due to invalid geometry.")
+                        logging.warning(f"Skipped side {side.id} of solid {solid.id} due to invalid geometry or convexity.")
             except Exception as e:
                 logging.error(f"Error processing side {side.id} of solid {solid.id}: {e}")
 
